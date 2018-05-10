@@ -78,8 +78,7 @@ int32_t __CFRunLoopRun()
 随着Swift的开源苹果也维护了一个Swift版本的跨平台CoreFoundation版本，除了mac平台它还是适配了Linux和Windows平台。但是鉴于目前很多关于Runloop的讨论都是以OC版展开的，所以这里也主要分析OC版本。
 
 下图描述了Runloop运行流程（基本描述了上面Runloop的核心流程，当然可以查看官方The Run Loop Sequence of Events描述）：
-
-RunLoop￼
+![avatar](https://images2015.cnblogs.com/blog/62046/201705/62046-20170508103512066-65199905.png)
 
 整个流程并不复杂（需要注意的就是_黄色_区域的消息处理中并不包含source0，因为它在循环开始之初就会处理），整个流程其实就是一种Event Loop的实现，其他平台均有类似的实现，只是这里叫做Runloop。但是既然RunLoop是一个消息循环，谁来管理和运行Runloop？那么它接收什么类型的消息？休眠过程是怎么样的？如何保证休眠时不占用系统资源？如何处理这些消息以及何时退出循环？还有一系列问题需要解开。
 
@@ -145,14 +144,14 @@ Runloop Mode
 
 CFRunLoopRef和CFRunloopMode、CFRunLoopSourceRef/CFRunloopTimerRef/CFRunLoopObserverRef关系如下图：
 
-RunLoopMode￼
+![avatar](https://images2015.cnblogs.com/blog/62046/201705/62046-20170508103511988-278243544.png)
 
 那么CFRunLoopSourceRef、CFRunLoopTimerRef和CFRunLoopObserverRef究竟是什么？它们在Runloop运行流程中起到什么作用呢？
 
 Source
 首先看一下官方Runloop结构图（注意下图的Input Source Port和前面流程图中的Source0并不对应，而是对应Source1。Source1和Timer都属于端口事件源，不同的是所有的Timer都共用一个端口“Mode Timer Port”，而每个Source1都有不同的对应端口）：
 
-RunLoopSource￼
+![avatar](https://images2015.cnblogs.com/blog/62046/201705/62046-20170508103511988-501851793.jpg)
 
 再结合前面RunLoop核心运行流程可以看出Source0(负责App内部事件，由App负责管理触发，例如UITouch事件)和Timer（又叫Timer Source，基于时间的触发器，上层对应NSTimer）是两个不同的Runloop事件源（当然Source0是Input Source中的一类，Input Source还包括Custom Input Source，由其他线程手动发出），RunLoop被这些事件唤醒之后就会处理并调用事件处理方法（CFRunLoopTimerRef的回调指针和CFRunLoopSourceRef均包含对应的回调指针）。
 但是对于CFRunLoopSourceRef除了Source0之外还有另一个版本就是Source1，Source1除了包含回调指针外包含一个mach port，和Source0需要手动触发不同，Source1可以监听系统端口和其他线程相互发送消息，它能够主动唤醒RunLoop(由操作系统内核进行管理，例如CFMessagePort消息)。官方也指出可以自定义Source，因此对于CFRunLoopSourceRef来说它更像一种协议，框架已经默认定义了两种实现，如果有必要开发人员也可以自定义，详细情况可以查看官方文档。
@@ -191,12 +190,12 @@ Call out
     static void __CFRUNLOOP_IS_CALLING_OUT_TO_A_SOURCE1_PERFORM_FUNCTION__();
 例如在控制器的touchBegin中打入断点查看堆栈（由于UIEvent是Source0，所以可以看到一个Source0的Call out函数CFRUNLOOP_IS_CALLING_OUT_TO_A_SOURCE0_PERFORM_FUNCTION调用）：
 
-RunLoop_Source0_UITouch￼
+![avatar](https://images2015.cnblogs.com/blog/62046/201705/62046-20170508103512035-1416280298.png)
 
 RunLoop休眠
 其实对于Event Loop而言RunLoop最核心的事情就是保证线程在没有消息时休眠以避免占用系统资源，有消息时能够及时唤醒。RunLoop的这个机制完全依靠系统内核来完成，具体来说是苹果操作系统核心组件Darwin中的Mach来完成的（Darwin是开源的）。可以从下图最底层Kernel中找到Mach：
 
-osx_architecture-kernels_drivers￼
+![avatar](https://images2015.cnblogs.com/blog/62046/201705/62046-20170508103511988-508450436.png)
 
 Mach是Darwin的核心，可以说是内核的核心，提供了进程间通信（IPC）、处理器调度等基础服务。在Mach中，进程、线程间的通信是以消息的方式来完成的，消息在两个Port之间进行传递（这也正是Source1之所以称之为Port-based Source的原因，因为它就是依靠系统发送消息到指定的Port来触发的）。消息的发送和接收使用<mach/message.h>中的mach_msg()函数（事实上苹果提供的Mach API很少，并不鼓励我们直接调用这些API）：
 
@@ -223,7 +222,7 @@ Mach是Darwin的核心，可以说是内核的核心，提供了进程间通信�
 Runloop和线程的关系
 Runloop是基于pthread进行管理的，pthread是基于c的跨平台多线程操作底层API。它是mach thread的上层封装（可以参见Kernel Programming Guide），和NSThread一一对应（而NSThread是一套面向对象的API，所以在iOS开发中我们也几乎不用直接使用pthread）。
 
-pthread￼
+![avatar](https://images2015.cnblogs.com/blog/62046/201705/62046-20170508103511988-1312865935.gif)
 
 苹果开发的接口中并没有直接创建Runloop的接口，如果需要使用Runloop通常CFRunLoopGetMain()和CFRunLoopGetCurrent()两个方法来获取（通过上面的源代码也可以看到，核心逻辑在_CFRunLoopGet_当中）,通过代码并不难发现其实只有当我们使用线程的方法主动get Runloop时才会在第一次创建该线程的Runloop，同时将它保存在全局的Dictionary中（线程和Runloop二者一一对应），默认情况下线程并不会创建Runloop（主线程的Runloop比较特殊，任何线程创建之前都会保证主线程已经存在Runloop），同时在线程结束的时候也会销毁对应的Runloop。
 
